@@ -53,6 +53,11 @@ def _class_distribution(combined: pd.DataFrame, table_path: Path, figure_path: P
     sns.set_theme(style="whitegrid")
     plt.figure(figsize=(9, 5))
     chart = sns.barplot(data=table, x="split", y="count", hue="label_name")
+    
+    # Add count labels on top of bars
+    for container in chart.containers:
+        chart.bar_label(container)
+
     chart.set_title("Class Distribution by Split")
     chart.set_xlabel("Split")
     chart.set_ylabel("Count")
@@ -96,6 +101,11 @@ def _length_analysis(
     stats.to_csv(table_path, index=False)
 
     plot_df = combined[combined["split"].isin(["train", "dev"])].copy()
+    
+    # Calculate 99th percentile to set a reasonable x-axis limit
+    p99 = plot_df["token_count"].quantile(0.99)
+    x_limit = max(p99, 200)  # Changed 150 to 200 to ensure x-axis is at least 200
+
     sns.set_theme(style="whitegrid")
     g = sns.displot(
         data=plot_df,
@@ -103,14 +113,19 @@ def _length_analysis(
         hue="label_name",
         col="split",
         kind="hist",
-        bins=40,
-        element="step",
+        bins=30,
+        element="bars",
+        fill=True,
+        alpha=0.5,
         stat="density",
         common_norm=False,
         height=4,
         aspect=1.2,
     )
+    
     g.set_axis_labels("Token Count", "Density")
+    g.set(xlim=(0, x_limit)) # Sets the x-axis limit dynamically
+    
     g.figure.suptitle("Token-Length Distribution by Label and Split", y=1.05)
     g.savefig(figure_path, dpi=220, bbox_inches="tight")
     plt.close("all")
