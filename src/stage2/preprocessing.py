@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 
 import pandas as pd
+from pandas.errors import ParserError
 
 from .acquisition import RawDataPaths
 
@@ -27,8 +28,73 @@ class PreprocessOutputs:
 
 
 def _read_table(path: Path) -> pd.DataFrame:
-    sep = "\t" if path.suffix.lower() == ".tsv" else ","
-    return pd.read_csv(path, sep=sep, engine="python")
+    def _safe_read(
+        file_path: Path,
+        *,
+        sep: str,
+        skiprows: int = 0,
+    ) -> pd.DataFrame:
+        return pd.read_csv(
+            file_path,
+            sep=sep,
+            engine="python",
+            skiprows=skiprows,
+        )
+
+    def _has_html_signature(lines: list[str]) -> bool:
+        head = "\n".join(lines[:10]).lower()
+        return "<html" in head or "<!doctype html" in head
+
+    def _find_first_data_line(lines: list[str], sep: str) -> int:
+        for idx, line in enumerate(lines):
+            if line.count(sep) > 0:
+                return idx
+        return 0
+
+    default_sep = "\t" if path.suffix.lower() == ".tsv" else ","
+    alternate_sep = "," if default_sep == "\t" else "\t"
+
+    try:
+        df = _safe_read(path, sep=default_sep)
+        if df.shape[1] > 1:
+            return df
+    except ParserError:
+        pass
+
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if _has_html_signature(lines):
+        raise RuntimeError(
+            f"{path.name} appears to be an HTML document instead of a data file. "
+            "Delete it and rerun the pipeline to re-download."
+        )
+
+    first_data_line = _find_first_data_line(lines, default_sep)
+    first_data_line_alt = _find_first_data_line(lines, alternate_sep)
+    candidate_attempts = [
+        (default_sep, first_data_line),
+        (default_sep, 0),
+        (alternate_sep, first_data_line_alt),
+        (alternate_sep, 0),
+    ]
+
+    tried: list[str] = []
+    for sep, skiprows in candidate_attempts:
+        key = f"sep={repr(sep)}, skiprows={skiprows}"
+        if key in tried:
+            continue
+        tried.append(key)
+        try:
+            df = _safe_read(path, sep=sep, skiprows=skiprows)
+            if df.shape[1] > 1:
+                return df
+        except ParserError:
+            continue
+
+    raise RuntimeError(
+        f"Could not parse {path.name} as structured data. "
+        f"Tried {', '.join(tried)}. "
+        "Please check that the downloaded file is complete and in CSV/TSV format."
+    )
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -52,6 +118,15 @@ def _coerce_binary_label(raw_label: object) -> int | None:
     value_str = str(raw_label).strip().lower()
     if value_str in {"", "nan", "none"}:
         return None
+    if value_str.startswith("[") and value_str.endswith("]"):
+        payload = value_str[1:-1].strip()
+        if payload == "":
+            return 0
+        try:
+            values = [int(float(part.strip())) for part in payload.split(",")]
+        except ValueError:
+            return None
+        return 1 if sum(values) > 0 else 0
     if value_str in {"pcl", "positive", "pos", "yes", "true"}:
         return 1
     if value_str in {"no_pcl", "non-pcl", "negative", "neg", "no", "false"}:
@@ -95,6 +170,38 @@ def _clean_text_series(series: pd.Series) -> pd.Series:
         .str.replace("\u200b", "", regex=False)
         .str.strip()
     )
+
+
+def _read_main_dataset_headerless(path: Path) -> pd.DataFrame:
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    first_data_line = None
+    for idx, line in enumerate(lines):
+        # Official DPM file rows have 6 tab-separated fields.
+        if line.count("\t") >= 5:
+            first_data_line = idx
+            break
+
+    if first_data_line is None:
+        raise RuntimeError(
+            f"Could not locate tabular rows in {path.name} for headerless parsing."
+        )
+
+    raw = pd.read_csv(
+        path,
+        sep="\t",
+        header=None,
+        skiprows=first_data_line,
+        engine="python",
+        on_bad_lines="skip",
+    )
+    if raw.shape[1] < 6:
+        raise RuntimeError(
+            f"Unexpected column count in {path.name}: expected at least 6, got {raw.shape[1]}."
+        )
+
+    output = raw.iloc[:, [0, 4, 5]].copy()
+    output.columns = ["par_id", "text", "label_raw"]
+    return output
 
 
 def _load_split_dataframe(path: Path) -> pd.DataFrame:
@@ -153,20 +260,25 @@ def _merge_split_files(paths: list[Path]) -> pd.DataFrame:
 
 
 def _build_main_binary_dataset(raw_paths: RawDataPaths) -> tuple[pd.DataFrame, dict[str, int | float]]:
-    raw_df = _normalize_columns(_read_table(raw_paths.dataset_tsv))
+    try:
+        raw_df = _normalize_columns(_read_table(raw_paths.dataset_tsv))
+    except RuntimeError:
+        raw_df = pd.DataFrame()
 
     id_col = _find_column(raw_df, ID_CANDIDATES)
     text_col = _find_column(raw_df, TEXT_CANDIDATES)
     label_col = _find_column(raw_df, LABEL_CANDIDATES)
 
-    missing = [name for name, col in {"id": id_col, "text": text_col, "label": label_col}.items() if col is None]
+    missing = [
+        name
+        for name, col in {"id": id_col, "text": text_col, "label": label_col}.items()
+        if col is None
+    ]
     if missing:
-        raise RuntimeError(
-            f"Missing required columns in {raw_paths.dataset_tsv.name}: {', '.join(missing)}"
-        )
-
-    df = raw_df[[id_col, text_col, label_col]].copy()
-    df.columns = ["par_id", "text", "label_raw"]
+        df = _read_main_dataset_headerless(raw_paths.dataset_tsv)
+    else:
+        df = raw_df[[id_col, text_col, label_col]].copy()
+        df.columns = ["par_id", "text", "label_raw"]
 
     df["par_id"] = pd.to_numeric(df["par_id"], errors="coerce")
     df["text"] = _clean_text_series(df["text"])
@@ -199,19 +311,32 @@ def _build_main_binary_dataset(raw_paths: RawDataPaths) -> tuple[pd.DataFrame, d
 
 
 def _build_test_dataset(raw_paths: RawDataPaths) -> pd.DataFrame:
-    test_df = _normalize_columns(_read_table(raw_paths.test_tsv))
+    try:
+        test_df = _normalize_columns(_read_table(raw_paths.test_tsv))
+    except RuntimeError:
+        test_df = pd.DataFrame()
     text_col = _find_column(test_df, TEXT_CANDIDATES)
-    if text_col is None:
-        raise RuntimeError(
-            f"Missing text column in {raw_paths.test_tsv.name}. "
-            f"Tried: {', '.join(TEXT_CANDIDATES)}"
-        )
-
     id_col = _find_column(test_df, ID_CANDIDATES)
-    if id_col is None:
-        output = pd.DataFrame({"sample_id": range(len(test_df)), "text": test_df[text_col]})
+
+    if text_col is None:
+        raw = pd.read_csv(
+            raw_paths.test_tsv,
+            sep="\t",
+            header=None,
+            engine="python",
+            on_bad_lines="skip",
+        )
+        if raw.shape[1] < 2:
+            raise RuntimeError(
+                f"Missing text column in {raw_paths.test_tsv.name}. "
+                f"Tried named columns: {', '.join(TEXT_CANDIDATES)} and headerless fallback."
+            )
+        output = pd.DataFrame({"sample_id": raw.iloc[:, 0], "text": raw.iloc[:, -1]})
     else:
-        output = pd.DataFrame({"sample_id": test_df[id_col], "text": test_df[text_col]})
+        if id_col is None:
+            output = pd.DataFrame({"sample_id": range(len(test_df)), "text": test_df[text_col]})
+        else:
+            output = pd.DataFrame({"sample_id": test_df[id_col], "text": test_df[text_col]})
 
     output["sample_id"] = output["sample_id"].astype(str).str.strip()
     output["text"] = _clean_text_series(output["text"])

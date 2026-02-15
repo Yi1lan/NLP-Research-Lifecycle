@@ -58,6 +58,29 @@ def _download_file(url: str, destination: Path, overwrite: bool = False) -> Path
     return destination
 
 
+def _looks_like_html(path: Path) -> bool:
+    if not path.exists():
+        return False
+    head = path.read_text(encoding="utf-8", errors="replace")[:300].lower()
+    return "<html" in head or "<!doctype html" in head
+
+
+def _looks_like_delimited_data(path: Path) -> bool:
+    if not path.exists():
+        return False
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[:30]
+    if not lines:
+        return False
+    return any(("\t" in line or "," in line) for line in lines)
+
+
+def _ensure_valid_file(url: str, destination: Path) -> Path:
+    path = _download_file(url, destination)
+    if _looks_like_html(path) or not _looks_like_delimited_data(path):
+        path = _download_file(url, destination, overwrite=True)
+    return path
+
+
 def _download_split_files_from_api(splits_dir: Path) -> list[Path]:
     response = requests.get(
         SPLITS_API_URL,
@@ -78,7 +101,9 @@ def _download_split_files_from_api(splits_dir: Path) -> list[Path]:
         if not download_url or not name:
             continue
         destination = splits_dir / str(name)
-        paths.append(_download_file(download_url, destination))
+        path = _ensure_valid_file(download_url, destination)
+        if _looks_like_delimited_data(path):
+            paths.append(path)
 
     if not paths:
         raise RuntimeError("No split files were available from the GitHub API listing")
@@ -91,7 +116,9 @@ def _download_split_files_fallback(splits_dir: Path) -> list[Path]:
         name = url.rsplit("/", maxsplit=1)[-1]
         destination = splits_dir / name
         try:
-            paths.append(_download_file(url, destination))
+            path = _ensure_valid_file(url, destination)
+            if _looks_like_delimited_data(path):
+                paths.append(path)
         except requests.RequestException:
             continue
     if not paths:
@@ -114,8 +141,8 @@ def download_stage2_data(raw_root: Path) -> RawDataPaths:
     splits_dir = raw_root / "practice_splits"
     splits_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset_tsv = _download_file(DATASET_URL, raw_root / "dontpatronizeme_pcl.tsv")
-    test_tsv = _download_file(TEST_URL, raw_root / "task4_test.tsv")
+    dataset_tsv = _ensure_valid_file(DATASET_URL, raw_root / "dontpatronizeme_pcl.tsv")
+    test_tsv = _ensure_valid_file(TEST_URL, raw_root / "task4_test.tsv")
     split_files = _download_split_files(splits_dir)
 
     return RawDataPaths(
