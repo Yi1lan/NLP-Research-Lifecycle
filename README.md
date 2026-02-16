@@ -11,6 +11,7 @@ Stage 2 includes:
 - Preprocessing and binary-label normalization
 - EDA Technique 1: Class distribution
 - EDA Technique 2: Token-length profiling
+- EDA Technique 3: Lexical signal analysis (class-discriminative unigrams)
 
 ## Repository Layout
 

@@ -49,3 +49,24 @@
 
 - Set model `max_length` using observed percentile statistics instead of arbitrary defaults.
 - Evaluate truncation trade-offs during Stage 4 tuning to avoid losing critical context in long examples.
+
+---
+
+## EDA Technique 3: Lexical Signal Analysis
+
+### Visual/Tabular Evidence
+
+- Figure: `outputs/stage2/figures/lexical_analysis.png`
+- Table: `outputs/stage2/tables/lexical_analysis.csv`
+
+### Analysis
+
+- Train lexical vocabulary size after filtering: **25692**
+- Top PCL-indicative token: **darkness**
+- Top No-PCL-indicative token: **anti**
+- Distinct token usage between labels indicates that lexical cues can support early feature engineering and targeted error analysis.
+
+### Impact Statement
+
+- Use high-signal lexical terms to guide baseline feature checks and qualitative inspection.
+- Review false positives/negatives against these lexical signals to confirm whether the model is learning meaningful patterns or shortcut cues.
