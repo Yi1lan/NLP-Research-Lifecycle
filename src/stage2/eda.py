@@ -243,9 +243,8 @@ def _length_analysis(
 
     plot_df = combined[combined["split"].isin(["train", "dev"])].copy()
     
-    # Calculate 99th percentile to set a reasonable x-axis limit
-    p99 = plot_df["token_count"].quantile(0.99)
-    x_limit = max(p99, 200)  # Changed 150 to 200 to ensure x-axis is at least 200
+    # Plot across the full observed token range for train/dev.
+    x_limit = max(float(plot_df["token_count"].max()), 1.0)
 
     sns.set_theme(style="whitegrid")
     g = sns.displot(
@@ -265,7 +264,7 @@ def _length_analysis(
     )
     
     g.set_axis_labels("Token Count", "Density")
-    g.set(xlim=(0, x_limit)) # Sets the x-axis limit dynamically
+    g.set(xlim=(0, x_limit))
     
     g.figure.suptitle("Token-Length Distribution by Label and Split", y=1.05)
     g.savefig(figure_path, dpi=220, bbox_inches="tight")
